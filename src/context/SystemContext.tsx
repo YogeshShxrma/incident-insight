@@ -105,7 +105,8 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
       const newLogs: LogEntry[] = [];
       const newTraces: Trace[] = [];
       const newAlerts: Alert[] = [];
-      const updatedServices = services.map((svc) => {
+      const currentServices = servicesRef.current;
+      const updatedServices = currentServices.map((svc) => {
         const svcFaults = faults[svc.id] || [];
         let cpu = svc.cpu * 0.7 + (15 + Math.random() * 20) * 0.3;
         let latency = svc.latency * 0.7 + (20 + Math.random() * 40) * 0.3;
