@@ -1,13 +1,33 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from 'react';
+import type { PageType } from '@/lib/types';
+import { SystemProvider } from '@/context/SystemContext';
+import Layout from '@/components/Layout';
+import Dashboard from '@/components/Dashboard';
+import LogsView from '@/components/LogsView';
+import TracesView from '@/components/TracesView';
+import AlertsView from '@/components/AlertsView';
+import IncidentsView from '@/components/IncidentsView';
+import ReportsView from '@/components/ReportsView';
+
+const PAGES: Record<PageType, React.ComponentType> = {
+  dashboard: Dashboard,
+  logs: LogsView,
+  traces: TracesView,
+  alerts: AlertsView,
+  incidents: IncidentsView,
+  reports: ReportsView,
+};
 
 const Index = () => {
+  const [page, setPage] = useState<PageType>('dashboard');
+  const PageComponent = PAGES[page];
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
+    <SystemProvider>
+      <Layout page={page} setPage={setPage}>
+        <PageComponent />
+      </Layout>
+    </SystemProvider>
   );
 };
 
