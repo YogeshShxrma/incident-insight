@@ -268,6 +268,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
       for (const t of newTraces) dbAction('traces', 'readwrite', 'add', t);
       for (const a of newAlerts) dbAction('alerts', 'readwrite', 'add', a);
 
+      servicesRef.current = updatedServices;
       setServices(updatedServices);
       setUiData((prev) => ({
         metrics: [...prev.metrics, ...newMetrics].slice(-MAX_ITEMS),
@@ -280,7 +281,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [running, services]);
+  }, [running]);
 
   const toggleRunning = useCallback(() => setRunning((r) => !r), []);
 
