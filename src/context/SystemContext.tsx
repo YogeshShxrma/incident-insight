@@ -65,6 +65,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
   const faultsRef = useRef<FaultState>({});
   const alertsRef = useRef<Alert[]>([]);
   const incidentsRef = useRef<Incident[]>([]);
+  const servicesRef = useRef<Service[]>(services);
 
   // Load persisted data on mount
   useEffect(() => {
