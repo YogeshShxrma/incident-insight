@@ -56,13 +56,25 @@ export function simulateTick(
   const now = Date.now();
   const diurnal = diurnalFactor();
   const burst = burstFactor(tickCount);
-  const hasAnyError = Object.values(faults).some((f) => f.length > 0 && f.includes('error'));
+  const activeFaultTypes = Object.values(faults).flat();
+  const hasError = activeFaultTypes.includes('error');
+  const hasLatency = activeFaultTypes.includes('latency');
+  const hasCpu = activeFaultTypes.includes('cpu');
 
-  // Throughput: realistic variation with sharp drops on errors
+  // Throughput: degrades based on fault type
   const basePackets = (750 + gaussian(200, 80)) * diurnal * burst;
-  const packetsPerSec = hasAnyError
-    ? Math.max(5, gaussian(30, 15))
-    : Math.max(50, basePackets);
+  let packetsPerSec: number;
+  if (hasError) {
+    packetsPerSec = Math.max(5, gaussian(30, 15)); // near-zero on errors
+  } else if (hasLatency && hasCpu) {
+    packetsPerSec = Math.max(20, gaussian(120, 40)); // severe degradation
+  } else if (hasLatency) {
+    packetsPerSec = Math.max(40, gaussian(250, 60)); // latency bottleneck cuts throughput
+  } else if (hasCpu) {
+    packetsPerSec = Math.max(50, gaussian(300, 70)); // CPU saturation throttles throughput
+  } else {
+    packetsPerSec = Math.max(50, basePackets);
+  }
 
   const newMetrics: Metric[] = [];
   const newLogs: LogEntry[] = [];
