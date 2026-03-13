@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import type { Service, Metric, LogEntry, Trace, Alert, Incident, FaultState, FaultType, UIData } from '@/lib/types';
+import type { Alert, Incident, FaultState, FaultType, UIData } from '@/lib/types';
 import { genId, initDB, dbAction, clearAllData } from '@/lib/db';
 import { SERVICES, areDependents } from '@/lib/topology';
+import { simulateTick } from '@/lib/simulation';
+import type { Service } from '@/lib/types';
 
 interface SystemContextType {
   services: Service[];
@@ -65,156 +67,49 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
   const faultsRef = useRef<FaultState>({});
   const alertsRef = useRef<Alert[]>([]);
   const incidentsRef = useRef<Incident[]>([]);
+  const servicesRef = useRef<Service[]>(SERVICES.map((s) => ({ ...s })));
+  const tickCountRef = useRef(0);
+
+  // Keep servicesRef in sync
+  useEffect(() => {
+    servicesRef.current = services;
+  }, [services]);
 
   // Load persisted data on mount
   useEffect(() => {
     (async () => {
       await initDB();
       const [metrics, logs, traces, alerts, incidents] = await Promise.all([
-        dbAction<Metric>('metrics', 'readonly', 'getAll'),
-        dbAction<LogEntry>('logs', 'readonly', 'getAll'),
-        dbAction<Trace>('traces', 'readonly', 'getAll'),
-        dbAction<Alert>('alerts', 'readonly', 'getAll'),
-        dbAction<Incident>('incidents', 'readonly', 'getAll'),
+        dbAction('metrics', 'readonly', 'getAll'),
+        dbAction('logs', 'readonly', 'getAll'),
+        dbAction('traces', 'readonly', 'getAll'),
+        dbAction('alerts', 'readonly', 'getAll'),
+        dbAction('incidents', 'readonly', 'getAll'),
       ]);
-      alertsRef.current = alerts;
-      incidentsRef.current = incidents;
+      alertsRef.current = alerts as Alert[];
+      incidentsRef.current = incidents as Incident[];
       setUiData({
-        metrics: metrics.slice(-MAX_ITEMS),
-        logs: logs.slice(-MAX_ITEMS),
-        traces: traces.slice(-MAX_ITEMS),
-        alerts: alerts.slice(-MAX_ITEMS),
-        incidents,
-        throughput: metrics.slice(-60).map((m) => ({ timestamp: m.timestamp, packetsPerSec: m.packetsPerSec })),
+        metrics: (metrics as any[]).slice(-MAX_ITEMS),
+        logs: (logs as any[]).slice(-MAX_ITEMS),
+        traces: (traces as any[]).slice(-MAX_ITEMS),
+        alerts: (alerts as any[]).slice(-MAX_ITEMS),
+        incidents: incidents as Incident[],
+        throughput: (metrics as any[]).slice(-60).map((m: any) => ({ timestamp: m.timestamp, packetsPerSec: m.packetsPerSec })),
       });
     })();
   }, []);
 
-  // Simulation tick
+  // Simulation tick — NO dependency on `services` to avoid re-creating interval
   useEffect(() => {
     if (!running) return;
 
     const interval = setInterval(async () => {
-      const now = Date.now();
+      tickCountRef.current++;
+      const currentServices = servicesRef.current;
       const faults = faultsRef.current;
-      const hasAnyError = Object.values(faults).some((f) => f.includes('error'));
-      const packetsPerSec = hasAnyError ? Math.random() * 50 : 800 + Math.random() * 400;
 
-      const newMetrics: Metric[] = [];
-      const newLogs: LogEntry[] = [];
-      const newTraces: Trace[] = [];
-      const newAlerts: Alert[] = [];
-      const updatedServices = services.map((svc) => {
-        const svcFaults = faults[svc.id] || [];
-        let cpu = svc.cpu * 0.7 + (15 + Math.random() * 20) * 0.3;
-        let latency = svc.latency * 0.7 + (20 + Math.random() * 40) * 0.3;
-        let errorRate = 0;
-
-        if (svcFaults.includes('cpu')) cpu = 85 + Math.random() * 15;
-        if (svcFaults.includes('latency')) latency = 800 + Math.random() * 600;
-        if (svcFaults.includes('error')) {
-          errorRate = 15 + Math.random() * 30;
-          cpu = Math.min(cpu + 20, 100);
-        }
-
-        // Cascade from dependencies
-        const depServices = SERVICES.filter((s) => svc.dependencies.includes(s.id));
-        for (const dep of depServices) {
-          const depFaults = faults[dep.id] || [];
-          if (depFaults.includes('latency')) latency += 200 + Math.random() * 200;
-          if (depFaults.includes('error')) errorRate += 5 + Math.random() * 10;
-        }
-
-        cpu = Math.min(cpu, 100);
-        latency = Math.max(latency, 5);
-        errorRate = Math.min(errorRate, 100);
-
-        const status: Service['status'] =
-          errorRate > 10 || cpu > 95 ? 'down' : latency > 500 || cpu > 80 ? 'degraded' : 'healthy';
-
-        const metric: Metric = {
-          id: genId(),
-          serviceId: svc.id,
-          timestamp: now,
-          cpu: Math.round(cpu * 10) / 10,
-          latency: Math.round(latency * 10) / 10,
-          errorRate: Math.round(errorRate * 10) / 10,
-          packetsPerSec: Math.round(packetsPerSec),
-        };
-        newMetrics.push(metric);
-
-        // Logs
-        const logLevel: LogEntry['level'] = errorRate > 10 ? 'ERROR' : latency > 500 ? 'WARN' : 'INFO';
-        const logMessages: Record<LogEntry['level'], string[]> = {
-          INFO: [`Request processed in ${Math.round(latency)}ms`, `Health check passed`, `Connection pool: ${Math.round(cpu)}% utilized`],
-          WARN: [`High latency detected: ${Math.round(latency)}ms`, `CPU usage elevated: ${cpu.toFixed(1)}%`],
-          ERROR: [`Service error rate: ${errorRate.toFixed(1)}%`, `Connection timeout after ${Math.round(latency)}ms`, `Circuit breaker triggered`],
-        };
-        const msgs = logMessages[logLevel];
-        newLogs.push({
-          id: genId(),
-          timestamp: now,
-          serviceId: svc.id,
-          level: logLevel,
-          message: msgs[Math.floor(Math.random() * msgs.length)],
-        });
-
-        // Traces
-        if (Math.random() > 0.6) {
-          newTraces.push({
-            id: genId(),
-            traceId: genId(),
-            timestamp: now,
-            serviceId: svc.id,
-            duration: Math.round(latency + Math.random() * 100),
-            status: errorRate > 10 ? 'ERROR' : 'OK',
-            spans: [
-              { service: svc.name, duration: Math.round(latency * 0.4) },
-              ...depServices.map((d) => ({ service: d.name, duration: Math.round(latency * 0.3 + Math.random() * 50) })),
-            ],
-          });
-        }
-
-        // Alerts
-        if (cpu > 90) {
-          newAlerts.push({
-            id: genId(),
-            timestamp: now,
-            serviceId: svc.id,
-            type: 'cpu',
-            severity: cpu > 95 ? 'critical' : 'warning',
-            value: Math.round(cpu * 10) / 10,
-            threshold: 90,
-            correlated: false,
-          });
-        }
-        if (latency > 1000) {
-          newAlerts.push({
-            id: genId(),
-            timestamp: now,
-            serviceId: svc.id,
-            type: 'latency',
-            severity: latency > 2000 ? 'critical' : 'warning',
-            value: Math.round(latency),
-            threshold: 1000,
-            correlated: false,
-          });
-        }
-        if (errorRate > 10) {
-          newAlerts.push({
-            id: genId(),
-            timestamp: now,
-            serviceId: svc.id,
-            type: 'error',
-            severity: errorRate > 25 ? 'critical' : 'warning',
-            value: Math.round(errorRate * 10) / 10,
-            threshold: 10,
-            correlated: false,
-          });
-        }
-
-        return { ...svc, cpu: Math.round(cpu * 10) / 10, latency: Math.round(latency * 10) / 10, errorRate: Math.round(errorRate * 10) / 10, status };
-      });
+      const { updatedServices, newMetrics, newLogs, newTraces, newAlerts, packetsPerSec } =
+        simulateTick(currentServices, faults, tickCountRef.current);
 
       // Correlation
       const allAlerts = [...alertsRef.current, ...newAlerts];
@@ -226,7 +121,6 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
           const matchedAlert = allAlerts.find((a) => a.id === match.matchId);
           if (matchedAlert) matchedAlert.correlated = true;
 
-          // Check if matched alert already belongs to an incident
           const existingIncident = incidentsRef.current.find(
             (inc) => inc.status === 'OPEN' && inc.alertIds.includes(match.matchId)
           );
@@ -244,7 +138,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
               id: genId(),
               title: `Correlated: ${alert.type} on ${alert.serviceId}`,
               status: 'OPEN',
-              createdAt: now,
+              createdAt: Date.now(),
               alertIds: [match.matchId, alert.id],
               correlationScore: Math.round(match.score * 100) / 100,
               affectedServices: [...new Set([alert.serviceId, matchedAlert?.serviceId || ''])].filter(Boolean),
@@ -273,12 +167,12 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
         traces: [...prev.traces, ...newTraces].slice(-MAX_ITEMS),
         alerts: [...prev.alerts, ...newAlerts].slice(-MAX_ITEMS),
         incidents: [...incidentsRef.current],
-        throughput: [...prev.throughput, { timestamp: now, packetsPerSec }].slice(-60),
+        throughput: [...prev.throughput, { timestamp: Date.now(), packetsPerSec }].slice(-60),
       }));
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [running, services]);
+  }, [running]); // Only depends on `running`, not `services`
 
   const toggleRunning = useCallback(() => setRunning((r) => !r), []);
 
